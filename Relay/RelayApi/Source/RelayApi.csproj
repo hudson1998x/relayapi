@@ -5,6 +5,10 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <RootNamespace>Relay</RootNamespace>
+        <PackageId>RelayApi</PackageId>
+        <Version>1.0.0</Version>
+        <Authors>John Hudson (hudson1998x)</Authors>
+        <Description>description of repo.</Description>
     </PropertyGroup>
 
 </Project>
