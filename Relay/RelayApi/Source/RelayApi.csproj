@@ -9,6 +9,12 @@
         <Version>1.0.0</Version>
         <Authors>John Hudson (hudson1998x)</Authors>
         <Description>description of repo.</Description>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
+    <ItemGroup>
+        <None Include="..\..\..\README.md" Pack="true" PackagePath="\">
+            <Link>README.md</Link>
+        </None>
+    </ItemGroup>
 
 </Project>

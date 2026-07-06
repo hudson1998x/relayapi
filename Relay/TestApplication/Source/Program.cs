@@ -56,6 +56,7 @@ class Program
                     "subtract" => a - b,
                     "multiply" => a * b,
                     "divide" => a / b,
+                    "square root" or "sqrt" => Math.Sqrt(a),
                     _ => throw new ArgumentException($"Unknown operation: {operation}")
                 };
             },
