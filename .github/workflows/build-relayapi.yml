@@ -31,11 +31,12 @@ jobs:
 
       - name: NuGet login (OIDC → temp API key)
         uses: NuGet/login@v1
+        id: login
         with:
           user: hudson1998x
 
       - name: NuGet push
-        run: dotnet nuget push ./nupkg/*.nupkg --source https://api.nuget.org/v3/index.json
+        run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
