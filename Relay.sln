@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestApplication", "Relay\TestApplication\Source\TestApplication.csproj", "{60891DE2-B385-4D49-9757-C93BDAFDF1BF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RelayApi", "Relay\RelayApi\Source\RelayApi.csproj", "{7975343A-3594-48AB-B8DD-A82EAF83FB0D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{60891DE2-B385-4D49-9757-C93BDAFDF1BF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{60891DE2-B385-4D49-9757-C93BDAFDF1BF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{60891DE2-B385-4D49-9757-C93BDAFDF1BF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{60891DE2-B385-4D49-9757-C93BDAFDF1BF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7975343A-3594-48AB-B8DD-A82EAF83FB0D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7975343A-3594-48AB-B8DD-A82EAF83FB0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7975343A-3594-48AB-B8DD-A82EAF83FB0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7975343A-3594-48AB-B8DD-A82EAF83FB0D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
