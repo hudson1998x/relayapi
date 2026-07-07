@@ -97,7 +97,7 @@ public class RelayService
 
                     var positionalArgs = definition.BuildPositionalArgs(toolCall.Arguments);
 
-                    if (definition.RequiresPermission)
+                    if ((definition.Policy & ToolPolicy.RequiresPermission) != 0)
                     {
                         var pending = new PendingToolCall(toolCall.ToolIdentifier, positionalArgs);
                         _pendingCalls[pending.Id] = pending;

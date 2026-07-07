@@ -23,7 +23,7 @@ class Program
         // ── Tool registration ────────────────────────────────────
         var registry = new ToolRegistry();
 
-        // Requires explicit approval (requiresPermission: true)
+        // Requires explicit approval
         registry.AddTool(
             "weather.get_current",
             typeof(WeatherResult),
@@ -38,12 +38,14 @@ class Program
                     Humidity = 45
                 };
             },
-            true, // RequiresPermission
+            ToolPolicy.RequiresPermission,
+            "Get the current weather for a location",
+            null,
             new ToolArgument(typeof(string), "location"),
             new ToolArgument(typeof(string), "unit", "celsius")
         );
 
-        // No approval needed (requiresPermission defaults to false)
+        // No approval needed (ToolPolicy.None is the default)
         registry.AddTool(
             "math.calculate",
             typeof(double),
@@ -60,10 +62,15 @@ class Program
                     _ => throw new ArgumentException($"Unknown operation: {operation}")
                 };
             },
+            "Perform mathematical calculations",
+            "Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root. Square root only uses parameter 'a'.",
             new ToolArgument(typeof(double), "a"),
             new ToolArgument(typeof(double), "b"),
             new ToolArgument(typeof(string), "operation")
         );
+
+        // Override policy after registration (e.g., lock down a third-party tool)
+        registry.ChangePolicy("math.calculate", ToolPolicy.RequiresPermission);
 
         // ── Provider & Service ───────────────────────────────────
         var provider = new OllamaProvider(config.OllamaBaseUrl, config.OllamaModel);

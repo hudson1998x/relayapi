@@ -14,6 +14,8 @@ registry.AddTool(
     {
         return $"22°C in {location}";
     },
+    "Get the current weather",      // Description (optional — helps the LLM understand the tool)
+    null,                           // Usage instructions (optional — guides the LLM on invocation)
     new ToolArgument(typeof(string), "location")  // Parameters
 );
 ```
@@ -32,7 +34,12 @@ new ToolArgument(typeof(string), "unit", "celsius") // Optional with default
 
 When the LLM omits an optional parameter, the default value is silently substituted.
 
-## Multiple Parameters
+## Description & Usage
+
+Each tool can include a **description** and **usage instructions** that are sent to the LLM:
+
+- **Description** — a short summary of what the tool does (shown to the LLM when deciding which tool to call)
+- **Usage** — guidance on how to invoke the tool correctly (appended to the description with a "Usage:" prefix)
 
 ```csharp
 registry.AddTool(
@@ -49,11 +56,66 @@ registry.AddTool(
             _ => throw new ArgumentException($"Unknown operation: {operation}")
         };
     },
+    "Perform mathematical calculations",
+    "Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root. Square root only uses parameter 'a'.",
     new ToolArgument(typeof(double), "a"),
     new ToolArgument(typeof(double), "b"),
     new ToolArgument(typeof(string), "operation")
 );
 ```
+
+When sent to the LLM, the description field combines both values:
+
+> Perform mathematical calculations
+>
+> Usage: Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root. Square root only uses parameter 'a'.
+
+This is especially useful for tools with non-obvious invocation patterns (e.g., a calculator that supports square root via a string parameter).
+
+## Multiple Parameters
+
+## Permission Policies
+
+Tools can be registered with a `ToolPolicy` to control whether they require approval before execution. The policy is a bit-flag enum, making it extensible for future flags.
+
+```csharp
+// Requires user approval before execution
+registry.AddTool(
+    "db.create",
+    typeof(string),
+    async (string record) => $"Created: {record}",
+    ToolPolicy.RequiresPermission,
+    "Create a database record",
+    null,
+    new ToolArgument(typeof(string), "record")
+);
+
+// No permission needed — executes instantly (default)
+registry.AddTool(
+    "math.calculate",
+    typeof(double),
+    async (double a, double b, string op) => op switch
+    {
+        "add" => a + b,
+        _ => throw new ArgumentException()
+    },
+    "Perform calculations",
+    null,
+    new ToolArgument(typeof(double), "a"),
+    new ToolArgument(typeof(double), "b"),
+    new ToolArgument(typeof(string), "operation")
+);
+```
+
+### Overriding Policies After Registration
+
+When importing third-party tools that default to no permission, you can lock them down with `ChangePolicy`:
+
+```csharp
+registry.ChangePolicy("db.create", ToolPolicy.RequiresPermission);
+```
+
+This modifies the tool's policy in place. If the identifier doesn't exist, a `KeyNotFoundException` is thrown.
 
 ## Async Handlers
 

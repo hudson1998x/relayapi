@@ -31,6 +31,7 @@ var config = new RelayConfiguration
 // Register tools
 var registry = new ToolRegistry();
 
+// Requires explicit approval
 registry.AddTool(
     "weather.get_current",
     typeof(WeatherResult),
@@ -43,12 +44,14 @@ registry.AddTool(
             Conditions = "Clear skies"
         };
     },
-    true, // RequiresPermission — will be queued for approval
+    ToolPolicy.RequiresPermission,
+    "Get the current weather for a location",
+    null,
     new ToolArgument(typeof(string), "location"),
     new ToolArgument(typeof(string), "unit", "celsius")
 );
 
-// No permission needed — executes instantly
+// No permission needed — executes instantly (default policy)
 registry.AddTool(
     "math.calculate",
     typeof(double),
@@ -58,10 +61,15 @@ registry.AddTool(
         "subtract" => a - b,
         _ => throw new ArgumentException()
     },
+    "Perform mathematical calculations",
+    "Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root",
     new ToolArgument(typeof(double), "a"),
     new ToolArgument(typeof(double), "b"),
     new ToolArgument(typeof(string), "operation")
 );
+
+// Override policy for third-party tools after registration
+registry.ChangePolicy("math.calculate", ToolPolicy.RequiresPermission);
 
 // Create the service
 var relay = new RelayService(
@@ -90,21 +98,61 @@ string? pirated = await relay.SendMessageAsync(
 Tools are identified by dot-separated identifiers (`db.create_record`, `http.fetch`, etc.) and support:
 
 | Feature | Description |
-|---|---|
+|---|---|---|
 | Named arguments | Each parameter has a name, type, and optional default |
 | Async handlers | All tool delegates return `Task<T>` |
-| Permission control | Set `requiresPermission: true` to gate execution behind approval |
+| Permission control | Set `ToolPolicy.RequiresPermission` to gate execution behind approval |
+| Policy override | `ChangePolicy()` updates a tool's permission policy after registration |
 | Structured returns | Complex return types are JSON-serialized with camelCase naming |
 
 ### Registration
 
 ```csharp
+// With permission, description, and usage instructions
 registry.AddTool("identifier", typeof(ReturnType), handler,
-    requiresPermission,       // optional, defaults to false
+    ToolPolicy.RequiresPermission,
+    "Description of what the tool does",
+    "Instructions for the LLM on how to invoke this tool",
     new ToolArgument(typeof(string), "name"),
     new ToolArgument(typeof(int), "count", 0)
 );
+
+// Without permission (default)
+registry.AddTool("identifier", typeof(ReturnType), handler,
+    "Description",
+    null,
+    new ToolArgument(typeof(string), "name")
+);
+
+// Override after registration
+registry.ChangePolicy("identifier", ToolPolicy.RequiresPermission);
 ```
+
+### Description & Usage
+
+Each tool can include a **description** and **usage instructions** sent directly to the LLM:
+
+- **Description** — a short summary of what the tool does, helping the LLM decide which tool to call
+- **Usage** — guidance on how to invoke the tool correctly (e.g., "Use 'square root' or 'sqrt' as the operation for square root calculations")
+
+When no description is provided, the LLM receives an empty description. Both fields are combined and sent in the `description` field of the function definition:
+
+```
+Perform mathematical calculations
+
+Usage: Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root. Square root only uses parameter 'a'.
+```
+
+## ToolPolicy
+
+The `ToolPolicy` enum is a `[Flags]` bit mask that controls tool behavior:
+
+| Value | Meaning |
+|---|---|
+| `None` | No special behavior (default) |
+| `RequiresPermission` | Tool call is queued for approval before execution |
+
+Policies are combined with bitwise OR, making the system extensible for future flags.
 
 ## Approval Workflow
 

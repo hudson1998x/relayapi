@@ -48,7 +48,7 @@ public class OllamaProvider : ILLMProvider
                 function = new
                 {
                     name = t.Identifier,
-                    description = "",
+                    description = BuildToolDescription(t.Description, t.Usage),
                     parameters = BuildParameters(t.Arguments)
                 }
             }).ToList()
@@ -113,6 +113,20 @@ public class OllamaProvider : ILLMProvider
             properties,
             required
         };
+    }
+
+    private static string BuildToolDescription(string? description, string? usage)
+    {
+        if (string.IsNullOrWhiteSpace(description) && string.IsNullOrWhiteSpace(usage))
+            return string.Empty;
+
+        if (string.IsNullOrWhiteSpace(description))
+            return $"Usage: {usage}";
+
+        if (string.IsNullOrWhiteSpace(usage))
+            return description;
+
+        return $"{description}\n\nUsage: {usage}";
     }
 
     private static string MapType(Type type)

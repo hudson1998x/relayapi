@@ -17,15 +17,19 @@ public class ToolDefinition
     public IReadOnlyList<ToolArgument> Arguments { get; }
     public Type ReturnType { get; }
     public Delegate Handler { get; }
-    public bool RequiresPermission { get; }
+    public ToolPolicy Policy { get; set; }
+    public string? Description { get; }
+    public string? Usage { get; }
 
-    public ToolDefinition(string identifier, IReadOnlyList<ToolArgument> arguments, Type returnType, Delegate handler, bool requiresPermission = false)
+    public ToolDefinition(string identifier, IReadOnlyList<ToolArgument> arguments, Type returnType, Delegate handler, ToolPolicy policy = ToolPolicy.None, string? description = null, string? usage = null)
     {
         Identifier = identifier;
         Arguments = arguments;
         ReturnType = returnType;
         Handler = handler;
-        RequiresPermission = requiresPermission;
+        Policy = policy;
+        Description = description;
+        Usage = usage;
     }
 
     public async Task<object?> ExecuteAsync(object?[] positionalArgs)

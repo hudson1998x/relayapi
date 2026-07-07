@@ -45,10 +45,11 @@ Console.WriteLine(response);
 ## Core Concepts
 
 | Component | Description |
-|---|---|
+|---|---|---|
 | `RelayService` | Main entrypoint — manages conversation, tools, and events |
 | `ILLMProvider` | Abstraction over LLM backends (Ollama built-in) |
 | `ToolRegistry` | Collection of registered tool definitions |
+| `ToolPolicy` | Bit-flag enum controlling tool permissions (e.g., `RequiresPermission`) |
 | `PendingToolCall` | A tool call awaiting approval before execution |
 | `IRelayLogger` | Pluggable logger with verbosity levels |
 
