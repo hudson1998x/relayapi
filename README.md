@@ -1,9 +1,10 @@
 # Relay
 
-Relay is a .NET library for communicating with large language models (LLMs) with built-in support for tool calling, approval workflows, personality/response styling, conversation management, and event-driven integrations — all over a pluggable provider interface.
+Relay is a .NET library for communicating with large language models (LLMs) with built-in support for streaming, tool calling, approval workflows, personality/response styling, conversation management, and event-driven integrations — all over a pluggable provider interface.
 
 ## Features
 
+- **Streaming mode** — Real-time token delivery via `IAsyncEnumerable`. Streaming pauses automatically when tool calls are detected, executes them, then resumes.
 - **Tool system** — Register typed tools with named arguments and async delegates. Tools can require explicit approval or execute automatically.
 - **Approval workflow** — Pending tool calls are queued and await approval. Supports both event-driven and polling-based patterns for integration with websocket APIs or other external approval UIs.
 - **Personality per prompt** — Pass a personality description per message to rephrase responses (e.g., "You are a cheerful pirate", "Speak like a grumpy old man").
@@ -37,6 +38,7 @@ registry.AddTool(
     typeof(WeatherResult),
     async (string location, string unit) =>
     {
+        await Task.Delay(100);
         return new WeatherResult
         {
             Location = location,
@@ -55,11 +57,17 @@ registry.AddTool(
 registry.AddTool(
     "math.calculate",
     typeof(double),
-    async (double a, double b, string op) => op switch
+    async (double a, double b, string operation) =>
     {
-        "add" => a + b,
-        "subtract" => a - b,
-        _ => throw new ArgumentException()
+        await Task.Delay(50);
+        return operation switch
+        {
+            "add" => a + b,
+            "subtract" => a - b,
+            "multiply" => a * b,
+            "divide" => a / b,
+            _ => throw new ArgumentException($"Unknown operation: {operation}")
+        };
     },
     "Perform mathematical calculations",
     "Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multiplication, 'divide' for division, and 'square root' or 'sqrt' for square root",
@@ -68,7 +76,7 @@ registry.AddTool(
     new ToolArgument(typeof(string), "operation")
 );
 
-// Override policy for third-party tools after registration
+// Override policy after registration
 registry.ChangePolicy("math.calculate", ToolPolicy.RequiresPermission);
 
 // Create the service
@@ -82,23 +90,113 @@ var relay = new RelayService(
     Logger = new ConsoleLogger()
 };
 
-// Listen for tool approval requests (if RequiresPermission is true)
-relay.ToolCallPending += (_, e) => e.PendingCall.Approve();
+// Listen for tool approval requests (if RequiresPermission is set)
+relay.ToolCallPending += (sender, e) =>
+{
+    Console.WriteLine($"Approving tool: {e.PendingCall.ToolIdentifier}");
+    e.PendingCall.Approve();
+};
 
-// Send a message with or without a personality
+// Non-streaming
 string? reply = await relay.SendMessageAsync("What's the weather in London?");
-string? pirated = await relay.SendMessageAsync(
-    "What's the weather in London?",
-    "You are a cheerful pirate"
-);
+
+// Streaming
+await foreach (var chunk in relay.SendMessageStreamingAsync("What's the weather in London?"))
+{
+    if (chunk.Content is not null)
+        Console.Write(chunk.Content);
+}
 ```
+
+## Streaming
+
+Streaming mode delivers tokens as they are generated using `IAsyncEnumerable<StreamChunk>`. When the LLM invokes a tool during a streaming response, the stream pauses, the tool executes (with the existing approval workflow), and the stream automatically resumes with the next response.
+
+### Basic usage
+
+```csharp
+await foreach (var chunk in relay.SendMessageStreamingAsync("Explain quantum computing"))
+{
+    if (chunk.Content is not null)
+        Console.Write(chunk.Content);
+}
+```
+
+### With personality
+
+```csharp
+await foreach (var chunk in relay.SendMessageStreamingAsync(
+    "Explain quantum computing",
+    "You are a pirate"))
+{
+    if (chunk.Content is not null)
+        Console.Write(chunk.Content);
+}
+```
+
+### With cancellation
+
+```csharp
+using var cts = new CancellationTokenSource();
+cts.CancelAfter(TimeSpan.FromSeconds(30));
+
+try
+{
+    await foreach (var chunk in relay.SendMessageStreamingAsync(
+        "Tell me a story",
+        ct: cts.Token))
+    {
+        if (chunk.Content is not null)
+            Console.Write(chunk.Content);
+    }
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine("\n[Timed out]");
+}
+```
+
+### Lifecycle events
+
+```csharp
+relay.StreamingResponseReceived += (sender, e) =>
+{
+    if (e.IsToolCallPause)
+        Console.WriteLine("\n[Executing tool calls...]");
+    else if (e.IsComplete)
+        Console.WriteLine("\n[Stream complete]");
+};
+```
+
+### StreamChunk
+
+Each chunk yielded by the stream contains:
+
+| Property | Description |
+|---|---|
+| `Content` | A text token from the LLM (null on tool-call chunks) |
+| `ToolCalls` | Completed tool calls when the stream finishes with tool invocations (null on content chunks) |
+| `IsComplete` | `true` on the final chunk of a streaming response |
+
+### How tool calls work during streaming
+
+When the LLM decides to call a tool mid-stream:
+
+1. The content tokens up to that point are yielded to the caller
+2. A chunk with `ToolCalls` and `IsComplete = true` is yielded
+3. `RelayService` executes the tool (with approval if required)
+4. The tool result is added to the conversation
+5. A new streaming request is sent to the LLM
+6. The new response tokens are yielded to the caller as a seamless continuation
+
+The consumer sees a continuous stream of tokens across multiple LLM round-trips without any extra code.
 
 ## Tool System
 
 Tools are identified by dot-separated identifiers (`db.create_record`, `http.fetch`, etc.) and support:
 
 | Feature | Description |
-|---|---|---|
+|---|---|
 | Named arguments | Each parameter has a name, type, and optional default |
 | Async handlers | All tool delegates return `Task<T>` |
 | Permission control | Set `ToolPolicy.RequiresPermission` to gate execution behind approval |
@@ -108,8 +206,13 @@ Tools are identified by dot-separated identifiers (`db.create_record`, `http.fet
 ### Registration
 
 ```csharp
+var registry = new ToolRegistry();
+
 // With permission, description, and usage instructions
-registry.AddTool("identifier", typeof(ReturnType), handler,
+registry.AddTool(
+    "identifier",
+    typeof(ReturnType),
+    handler,
     ToolPolicy.RequiresPermission,
     "Description of what the tool does",
     "Instructions for the LLM on how to invoke this tool",
@@ -118,7 +221,10 @@ registry.AddTool("identifier", typeof(ReturnType), handler,
 );
 
 // Without permission (default)
-registry.AddTool("identifier", typeof(ReturnType), handler,
+registry.AddTool(
+    "identifier",
+    typeof(ReturnType),
+    handler,
     "Description",
     null,
     new ToolArgument(typeof(string), "name")
@@ -128,7 +234,7 @@ registry.AddTool("identifier", typeof(ReturnType), handler,
 registry.ChangePolicy("identifier", ToolPolicy.RequiresPermission);
 ```
 
-### Description & Usage
+### Description and Usage
 
 Each tool can include a **description** and **usage instructions** sent directly to the LLM:
 
@@ -147,9 +253,9 @@ Usage: Use 'add' for addition, 'subtract' for subtraction, 'multiply' for multip
 
 The `ToolPolicy` enum is a `[Flags]` bit mask that controls tool behavior:
 
-| Value | Meaning |
-|---|---|
-| `None` | No special behavior (default) |
+| Value                | Meaning                                           |
+|----------------------|---------------------------------------------------|
+| `None`               | No special behavior (default)                     |
 | `RequiresPermission` | Tool call is queued for approval before execution |
 
 Policies are combined with bitwise OR, making the system extensible for future flags.
@@ -164,21 +270,64 @@ When the LLM calls a permissioned tool:
 4. If approved, the tool executes and the result is sent back to the LLM
 5. If rejected, the rejection reason is sent back as an error
 
+This works identically in both streaming and non-streaming modes.
+
+### Event-driven
+
+```csharp
+relay.ToolCallPending += (sender, e) =>
+{
+    Console.WriteLine($"Tool: {e.PendingCall.ToolIdentifier}");
+    Console.WriteLine($"Arguments: {string.Join(", ", e.PendingCall.Arguments)}");
+    e.PendingCall.Approve();
+};
+```
+
 ### Polling pattern
 
 ```csharp
-// From a websocket endpoint or background service:
 var pending = relay.GetPendingToolCalls();
-// ... send to client, await decision ...
-pending.First().Approve();
+foreach (var call in pending)
+{
+    Console.WriteLine($"Tool: {call.ToolIdentifier} (id: {call.Id})");
+    call.Approve();
+}
+```
+
+### Manual approval and rejection
+
+```csharp
+relay.ToolCallPending += (sender, e) =>
+{
+    var call = e.PendingCall;
+
+    // Approve
+    call.Approve();
+
+    // Or reject with a reason
+    call.Reject("Not authorized to perform this action");
+};
 ```
 
 ## Personality
 
-Pass a personality as the second argument to `SendMessageAsync`:
+Pass a personality as the second argument to `SendMessageAsync` or `SendMessageStreamingAsync`:
 
 ```csharp
-await relay.SendMessageAsync("Tell me a joke", "You are a grumpy old man");
+// Non-streaming
+string? reply = await relay.SendMessageAsync(
+    "Tell me a joke",
+    "You are a grumpy old man"
+);
+
+// Streaming
+await foreach (var chunk in relay.SendMessageStreamingAsync(
+    "Tell me a joke",
+    "You are a grumpy old man"))
+{
+    if (chunk.Content is not null)
+        Console.Write(chunk.Content);
+}
 ```
 
 The factual response is generated first (with full tool support), then rephrased according to the personality. If the rephrasing fails, the original response is returned.
@@ -188,35 +337,188 @@ The factual response is generated first (with full tool support), then rephrased
 ```csharp
 var config = new RelayConfiguration
 {
-    MaxConversationHistory = 100,  // trim oldest non-system messages
+    MaxConversationHistory = 100,
     OllamaBaseUrl = "http://localhost:11434",
     OllamaModel = "llama3.1"
 };
 ```
 
+| Property | Default | Description |
+|---|---|---|
+| `MaxConversationHistory` | `50` | Maximum messages to keep. Oldest non-system messages are trimmed. |
+| `OllamaBaseUrl` | `"http://localhost:11434"` | Base URL for the Ollama API. |
+| `OllamaModel` | `"llama3.1"` | Model name to use with Ollama. |
+
 ## Logging
 
 Four verbosity levels with a pluggable `IRelayLogger` interface:
 
-| Level | Shows |
-|---|---|
-| `None` | Nothing |
-| `Minimal` | Errors, rejections, execution failures |
-| `Normal` | Messages, responses, tool calls, JSON results |
-| `Verbose` | Raw LLM response dumps |
+```csharp
+public interface IRelayLogger
+{
+    void Log(LogVerbosity level, string message);
+}
+```
+
+| Level     | Shows                                         |
+|-----------|-----------------------------------------------|
+| `None`    | Nothing                                       |
+| `Minimal` | Errors, rejections, execution failures        |
+| `Normal`  | Messages, responses, tool calls, JSON results |
+| `Verbose` | Raw LLM response dumps                        |
+
+### Example logger
+
+```csharp
+public class ConsoleLogger : IRelayLogger
+{
+    public void Log(LogVerbosity level, string message)
+    {
+        var prefix = level switch
+        {
+            LogVerbosity.Minimal => "[ERR]",
+            LogVerbosity.Normal => "[INF]",
+            LogVerbosity.Verbose => "[DBG]",
+            _ => "[?]"
+        };
+        Console.WriteLine($"{prefix} {message}");
+    }
+}
+```
 
 ## Provider Interface
 
 Implement `ILLMProvider` to add any LLM backend:
 
 ```csharp
+public interface ILLMProvider
+{
+    Task<LLMResponse> SendAsync(LLMRequest request, CancellationToken ct = default);
+    IAsyncEnumerable<StreamChunk> SendStreamingAsync(LLMRequest request, CancellationToken ct = default);
+}
+```
+
+### Implementing a non-streaming provider
+
+```csharp
 public class MyProvider : ILLMProvider
 {
-    public async Task<LLMResponse> SendAsync(LLMRequest request, CancellationToken ct)
+    public async Task<LLMResponse> SendAsync(LLMRequest request, CancellationToken ct = default)
     {
-        // Map request.Messages, request.Tools to your API
-        // Return LLMResponse with message and/or tool calls
+        // Map request.Messages and request.Tools to your API
+        // Return an LLMResponse with a Message and/or ToolCalls
+        return new LLMResponse
+        {
+            Message = new Message { Role = "assistant", Content = "..." }
+        };
     }
+
+    public async IAsyncEnumerable<StreamChunk> SendStreamingAsync(
+        LLMRequest request,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        // Stream tokens as they arrive
+        yield return new StreamChunk { Content = "token" };
+
+        // When done, yield the final chunk
+        yield return new StreamChunk { IsComplete = true };
+    }
+}
+```
+
+### Implementing a streaming provider
+
+When implementing `SendStreamingAsync`, the method should:
+
+1. Send a request to the LLM with streaming enabled
+2. Read response chunks incrementally
+3. `yield return new StreamChunk { Content = "token" }` for each text token
+4. Accumulate tool call arguments across chunks (they arrive incrementally from the LLM)
+5. `yield return new StreamChunk { ToolCalls = [...], IsComplete = true }` when the stream ends
+
+## Events
+
+| Event | Args | Fires when |
+|---|---|---|
+| `ToolCallPending` | `ToolCallPendingEventArgs` | A permissioned tool call is queued for approval |
+| `ResponseReceived` | `ResponseReceivedEventArgs` | A non-streaming response is fully received |
+| `StreamingResponseReceived` | `StreamingResponseReceivedEventArgs` | A streaming response completes or pauses for tool execution |
+
+### ToolCallPendingEventArgs
+
+| Property | Type | Description |
+|---|---|---|
+| `PendingCall` | `PendingToolCall` | The pending tool call awaiting approval |
+
+### ResponseReceivedEventArgs
+
+| Property | Type | Description |
+|---|---|---|
+| `Response` | `string` | The full response text |
+| `Conversation` | `IReadOnlyList<Message>` | Current conversation history |
+
+### StreamingResponseReceivedEventArgs
+
+| Property | Type | Description |
+|---|---|---|
+| `AccumulatedResponse` | `string` | The full response text accumulated so far |
+| `Conversation` | `IReadOnlyList<Message>` | Current conversation history |
+| `IsToolCallPause` | `bool` | `true` if the stream paused for tool execution |
+| `IsComplete` | `bool` | `true` if the streaming response is fully done |
+
+## Models
+
+### LLMRequest
+
+```csharp
+public class LLMRequest
+{
+    public List<Message> Messages { get; set; }
+    public List<ToolDefinition>? Tools { get; set; }
+}
+```
+
+### LLMResponse
+
+```csharp
+public class LLMResponse
+{
+    public Message? Message { get; set; }
+    public List<ToolCall>? ToolCalls { get; set; }
+}
+```
+
+### Message
+
+```csharp
+public class Message
+{
+    public string Role { get; set; }
+    public string? Content { get; set; }
+    public List<ToolCall>? ToolCalls { get; set; }
+    public string? ToolCallId { get; set; }
+}
+```
+
+### ToolCall
+
+```csharp
+public class ToolCall
+{
+    public string Id { get; set; }
+    public string ToolIdentifier { get; set; }
+    public Dictionary<string, object?> Arguments { get; set; }
+}
+```
+
+### StreamChunk
+
+```csharp
+public class StreamChunk
+{
+    public string? Content { get; set; }
+    public List<ToolCall>? ToolCalls { get; set; }
+    public bool IsComplete { get; set; }
 }
 ```
 
@@ -224,11 +526,14 @@ public class MyProvider : ILLMProvider
 
 ```
 RelayApi/Source/
-├── Abstractions/        # ILLMProvider, Models (LLMRequest, LLMResponse, Message, ToolCall)
+├── Abstractions/        # ILLMProvider, Models (LLMRequest, LLMResponse, Message, ToolCall, StreamChunk)
 ├── Providers/           # OllamaProvider
-├── Tools/               # ToolRegistry, ToolDefinition, ToolArgument, PendingToolCall
-├── Events/              # ToolCallPendingEventArgs, ResponseReceivedEventArgs
+├── Tools/               # ToolRegistry, ToolDefinition, ToolArgument, PendingToolCall, ToolPolicy
+├── Events/              # ToolCallPendingEventArgs, ResponseReceivedEventArgs, StreamingResponseReceivedEventArgs
 ├── Logging/             # LogVerbosity, IRelayLogger
 ├── Configuration/       # RelayConfiguration
+├── Knowledge/           # IKnowledgeProvider, KnowledgeProviderRegistry, KnowledgeQuery, KnowledgeResult
+├── Classification/      # IKnowledgeClassifier, LLMClassifier
+├── Planning/            # IPlanner, LLMPlanner, Plan, PlanStep
 └── Services/            # RelayService
 ```

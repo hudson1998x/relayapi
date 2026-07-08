@@ -123,7 +123,7 @@ class Program
         registry.ChangePolicy("math.calculate", ToolPolicy.RequiresPermission);
 
         // ── LLM Provider ──────────────────────────────────────────
-        var llmProvider = new OllamaProvider(config.OllamaBaseUrl, config.OllamaModel);
+        var llmProvider = new OllamaProvider(config.OllamaBaseUrl, config.OllamaModel, logger);
 
         // ── Knowledge System ──────────────────────────────────────
         var classifier = new LLMClassifier(llmProvider);
@@ -152,10 +152,10 @@ class Program
 
         // ── Event listeners ──────────────────────────────────────
         relay.ToolCallPending += OnToolCallPending;
-        relay.ResponseReceived += OnResponseReceived;
+        relay.StreamingResponseReceived += OnStreamingResponseReceived;
 
         // ── Chat loop ────────────────────────────────────────────
-        Console.WriteLine("Relay chat (type 'exit' to quit, 'clear' to reset)");
+        Console.WriteLine("Relay chat — streaming mode (type 'exit' to quit, 'clear' to reset)");
         Console.WriteLine("Knowledge system: enabled");
         Console.WriteLine($"Skills directory: {skillsDir}");
         Console.WriteLine(new string('-', 50));
@@ -186,8 +186,12 @@ class Program
                 }
             }
 
-            var response = await relay.SendMessageAsync(message, personality);
-            Console.WriteLine($"Relay: {response}");
+            await foreach (var chunk in relay.SendMessageStreamingAsync(message, personality))
+            {
+                if (chunk.Content is not null)
+                    Console.Write(chunk.Content);
+            }
+            Console.WriteLine();
             Console.WriteLine();
         }
     }
@@ -213,9 +217,12 @@ class Program
         call.Approve();
     }
 
-    private static void OnResponseReceived(object? sender, ResponseReceivedEventArgs e)
+    private static void OnStreamingResponseReceived(object? sender, StreamingResponseReceivedEventArgs e)
     {
-        Console.WriteLine(new string('-', 50));
+        if (e.IsToolCallPause)
+            Console.WriteLine("\n[Tool calls executing...]");
+        else if (e.IsComplete)
+            Console.WriteLine(new string('-', 50));
     }
 }
 

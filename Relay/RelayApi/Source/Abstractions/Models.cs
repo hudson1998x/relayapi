@@ -28,3 +28,10 @@ public class ToolCall
     public string ToolIdentifier { get; set; } = string.Empty;
     public Dictionary<string, object?> Arguments { get; set; } = [];
 }
+
+public class StreamChunk
+{
+    public string? Content { get; set; }
+    public List<ToolCall>? ToolCalls { get; set; }
+    public bool IsComplete { get; set; }
+}
