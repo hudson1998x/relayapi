@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Relay.Abstractions;
 using Relay.Classification;
@@ -34,6 +35,7 @@ public class RelayService
 
     public event EventHandler<ToolCallPendingEventArgs>? ToolCallPending;
     public event EventHandler<ResponseReceivedEventArgs>? ResponseReceived;
+    public event EventHandler<StreamingResponseReceivedEventArgs>? StreamingResponseReceived;
 
     public RelayService(
         ILLMProvider provider,
@@ -86,6 +88,183 @@ public class RelayService
             result = await ApplyPersonalityAsync(result, personality);
 
         return result;
+    }
+
+    public async IAsyncEnumerable<StreamChunk> SendMessageStreamingAsync(
+        string message,
+        string? personality = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        Log(LogVerbosity.Normal, $"Sending message (streaming): {message}");
+
+        if (_config.EnableClassification && _classifier is not null && _knowledgeRegistry is not null)
+            await InjectKnowledgeAsync(message);
+
+        _conversation.Add(new Message { Role = "user", Content = message });
+        TrimConversation();
+
+        var maxIterations = 20;
+
+        for (int iteration = 0; iteration < maxIterations; iteration++)
+        {
+            var request = new LLMRequest
+            {
+                Messages = [.._conversation],
+                Tools = _toolRegistry.GetAll().Count > 0 ? [.._toolRegistry.GetAll()] : null
+            };
+
+            Log(LogVerbosity.Verbose, $"Streaming request: {request.Messages.Count} messages, {request.Tools?.Count ?? 0} tools");
+
+            List<ToolCall>? pendingToolCalls = null;
+            var accumulatedContent = new System.Text.StringBuilder();
+
+            await foreach (var chunk in _provider.SendStreamingAsync(request, ct))
+            {
+                if (chunk.Content is { Length: > 0 })
+                {
+                    accumulatedContent.Append(chunk.Content);
+                    yield return new StreamChunk { Content = chunk.Content };
+                }
+
+                if (chunk.ToolCalls is { Count: > 0 })
+                {
+                    pendingToolCalls = chunk.ToolCalls;
+                }
+
+                if (chunk.IsComplete)
+                {
+                    if (pendingToolCalls is { Count: > 0 })
+                    {
+                        var content = accumulatedContent.Length > 0 ? accumulatedContent.ToString() : null;
+                        _conversation.Add(new Message
+                        {
+                            Role = "assistant",
+                            Content = content,
+                            ToolCalls = pendingToolCalls
+                        });
+                    }
+                    else
+                    {
+                        var content = accumulatedContent.Length > 0 ? accumulatedContent.ToString() : null;
+                        if (content is not null)
+                        {
+                            _conversation.Add(new Message
+                            {
+                                Role = "assistant",
+                                Content = content
+                            });
+                        }
+                    }
+
+                    Log(LogVerbosity.Verbose, $"Streaming chunk complete: content={accumulatedContent.Length} chars, toolCalls={pendingToolCalls?.Count ?? 0}");
+                    break;
+                }
+            }
+
+            if (pendingToolCalls is { Count: > 0 })
+            {
+                Log(LogVerbosity.Normal, $"Streaming paused for {pendingToolCalls.Count} tool call(s)");
+                StreamingResponseReceived?.Invoke(this, new StreamingResponseReceivedEventArgs(
+                    accumulatedContent.ToString(),
+                    _conversation.AsReadOnly(),
+                    isToolCallPause: true,
+                    isComplete: false));
+
+                foreach (var toolCall in pendingToolCalls)
+                {
+                    var definition = _toolRegistry.GetDefinition(toolCall.ToolIdentifier);
+
+                    if (definition is null)
+                    {
+                        Log(LogVerbosity.Minimal, $"Unknown tool: {toolCall.ToolIdentifier}");
+                        _conversation.Add(new Message
+                        {
+                            Role = "tool",
+                            ToolCallId = toolCall.Id,
+                            Content = $"Error: unknown tool '{toolCall.ToolIdentifier}'"
+                        });
+                        continue;
+                    }
+
+                    var positionalArgs = definition.BuildPositionalArgs(toolCall.Arguments);
+
+                    if ((definition.Policy & ToolPolicy.RequiresPermission) != 0)
+                    {
+                        var pending = new PendingToolCall(toolCall.ToolIdentifier, positionalArgs);
+                        _pendingCalls[pending.Id] = pending;
+
+                        Log(LogVerbosity.Normal, $"Tool call pending: {pending.Id} ({toolCall.ToolIdentifier})");
+                        ToolCallPending?.Invoke(this, new ToolCallPendingEventArgs(pending));
+
+                        var approval = await pending.WaitForApprovalAsync();
+                        _pendingCalls.TryRemove(pending.Id, out _);
+
+                        if (approval == ApprovalResult.Rejected)
+                        {
+                            var reason = pending.RejectionReason ?? "No reason provided";
+                            Log(LogVerbosity.Normal, $"Tool rejected: {pending.Id} ({toolCall.ToolIdentifier}) - {reason}");
+                            _conversation.Add(new Message
+                            {
+                                Role = "tool",
+                                ToolCallId = toolCall.Id,
+                                Content = $"Error: tool call rejected. Reason: {reason}"
+                            });
+                            TrimConversation();
+                            continue;
+                        }
+
+                        Log(LogVerbosity.Normal, $"Tool approved: {pending.Id} ({toolCall.ToolIdentifier})");
+                    }
+
+                    try
+                    {
+                        var result = await definition.ExecuteAsync(positionalArgs);
+                        var resultStr = definition.SerializeResult(result);
+
+                        Log(LogVerbosity.Normal, $"Tool result ({toolCall.ToolIdentifier}): {resultStr}");
+
+                        _conversation.Add(new Message
+                        {
+                            Role = "tool",
+                            ToolCallId = toolCall.Id,
+                            Content = resultStr
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Log(LogVerbosity.Minimal, $"Tool execution failed: {toolCall.ToolIdentifier} - {ex.Message}");
+                        _conversation.Add(new Message
+                        {
+                            Role = "tool",
+                            ToolCallId = toolCall.Id,
+                            Content = $"Error: {ex.Message}"
+                        });
+                    }
+
+                    TrimConversation();
+                }
+
+                continue;
+            }
+
+            var responseText = accumulatedContent.ToString();
+            if (!string.IsNullOrWhiteSpace(responseText) && !string.IsNullOrWhiteSpace(personality))
+            {
+                responseText = await ApplyPersonalityAsync(responseText, personality);
+            }
+
+            Log(LogVerbosity.Normal, $"Streaming response complete: {responseText}");
+            StreamingResponseReceived?.Invoke(this, new StreamingResponseReceivedEventArgs(
+                responseText,
+                _conversation.AsReadOnly(),
+                isToolCallPause: false,
+                isComplete: true));
+            ResponseReceived?.Invoke(this, new ResponseReceivedEventArgs(responseText, _conversation.AsReadOnly()));
+
+            yield break;
+        }
+
+        Log(LogVerbosity.Minimal, "Max conversation iterations reached (streaming)");
     }
 
     public void ClearConversation()
