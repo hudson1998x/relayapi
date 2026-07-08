@@ -1,9 +1,12 @@
 ﻿using Relay.Abstractions;
+using Relay.Classification;
 using Relay.Configuration;
 using Relay.Events;
+using Relay.Knowledge;
 using Relay.Logging;
 using Relay.Providers;
 using Relay.Services;
+using Relay.TestApplication.Knowledge;
 using Relay.Tools;
 
 namespace Relay.TestApplication;
@@ -17,13 +20,14 @@ class Program
         var config = new RelayConfiguration
         {
             OllamaModel = "qwen3",
-            MaxConversationHistory = 100
+            MaxConversationHistory = 100,
+            EnableClassification = true,
+            EnablePlanning = true
         };
 
         // ── Tool registration ────────────────────────────────────
         var registry = new ToolRegistry();
 
-        // Requires explicit approval
         registry.AddTool(
             "weather.get_current",
             typeof(WeatherResult),
@@ -45,7 +49,6 @@ class Program
             new ToolArgument(typeof(string), "unit", "celsius")
         );
 
-        // No approval needed (ToolPolicy.None is the default)
         registry.AddTool(
             "math.calculate",
             typeof(double),
@@ -69,14 +72,81 @@ class Program
             new ToolArgument(typeof(string), "operation")
         );
 
-        // Override policy after registration (e.g., lock down a third-party tool)
+        registry.AddTool(
+            "directory.list",
+            typeof(List<string>),
+            async (string dir) =>
+            {
+                await Task.Delay(50);
+                var files = new List<string>();
+
+                files.AddRange(Directory.GetDirectories(dir));
+                files.AddRange(Directory.GetFiles(dir));
+                return files;
+            },
+            "List all files and directories in the given directory",
+            "Use this to explore directory contents. Pass the full directory path.",
+            new ToolArgument(typeof(string), "directory")
+        );
+
+        registry.AddTool(
+            "file.read",
+            typeof(string),
+            async (string path, int startLine) =>
+            {
+                await Task.Delay(50);
+                if (!File.Exists(path))
+                    return $"File not found: {path}";
+
+                var lines = await File.ReadAllLinesAsync(path);
+                if (startLine < 1) startLine = 1;
+                if (startLine > lines.Length)
+                    return $"Line {startLine} exceeds file length ({lines.Length} lines).";
+
+                var end = Math.Min(startLine + 19, lines.Length);
+                var segment = new List<string>();
+                for (int i = startLine - 1; i < end; i++)
+                    segment.Add($"{i + 1}: {lines[i]}");
+
+                var result = string.Join('\n', segment);
+                var hasMore = end < lines.Length;
+                result += $"\n\n[Lines {startLine}-{end} of {lines.Length}";
+                result += hasMore ? $"; use startLine={end + 1} for next segment]" : "; end of file]";
+                return result;
+            },
+            "Reads 20 lines from a file starting at the given line number",
+            "Use this to inspect source files in segments. Call repeatedly with increasing startLine to scan through the full file.",
+            new ToolArgument(typeof(string), "path"),
+            new ToolArgument(typeof(int), "startLine", 1)
+        );
+
         registry.ChangePolicy("math.calculate", ToolPolicy.RequiresPermission);
 
-        // ── Provider & Service ───────────────────────────────────
-        var provider = new OllamaProvider(config.OllamaBaseUrl, config.OllamaModel);
-        var relay = new RelayService(provider, registry, config)
+        // ── LLM Provider ──────────────────────────────────────────
+        var llmProvider = new OllamaProvider(config.OllamaBaseUrl, config.OllamaModel);
+
+        // ── Knowledge System ──────────────────────────────────────
+        var classifier = new LLMClassifier(llmProvider);
+
+        var knowledgeRegistry = new KnowledgeProviderRegistry();
+
+        // Search project source files by filename
+        var projectRoot = FindProjectRoot();
+        knowledgeRegistry.AddProvider<FileSearchProvider, FileSearchResult>(
+            new FileSearchProvider(projectRoot));
+
+        // Load procedural skills from markdown files
+        var skillsDir = Path.Combine(projectRoot, "Relay", "TestApplication", "skills");
+        if (Directory.Exists(skillsDir))
         {
-            Verbosity = LogVerbosity.Normal,
+            knowledgeRegistry.AddProvider<MarkdownSkillProvider, List<Procedure>>(
+                new MarkdownSkillProvider(skillsDir));
+        }
+
+        // ── Provider & Service ───────────────────────────────────
+        var relay = new RelayService(llmProvider, registry, config, classifier, knowledgeRegistry)
+        {
+            Verbosity = LogVerbosity.Verbose,
             Logger = logger
         };
 
@@ -86,6 +156,8 @@ class Program
 
         // ── Chat loop ────────────────────────────────────────────
         Console.WriteLine("Relay chat (type 'exit' to quit, 'clear' to reset)");
+        Console.WriteLine("Knowledge system: enabled");
+        Console.WriteLine($"Skills directory: {skillsDir}");
         Console.WriteLine(new string('-', 50));
 
         while (true)
@@ -120,12 +192,24 @@ class Program
         }
     }
 
+    private static string FindProjectRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir, "Relay.sln")))
+                return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return AppContext.BaseDirectory;
+    }
+
     private static void OnToolCallPending(object? sender, ToolCallPendingEventArgs e)
     {
         var call = e.PendingCall;
         Console.WriteLine($"[Pending tool: {call.ToolIdentifier} (id: {call.Id})]");
 
-        // Auto-approve in this demo
         call.Approve();
     }
 
